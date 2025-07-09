@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>分貝警報器</title>
+  <style>
+    body {
+      font-family: "微軟正黑體", sans-serif;
+      background-color: #f0f8ff;
+      padding: 30px;
+      font-size: 22px;
+      text-align: center;
+    }
+
+    h1 {
+      color: #0066cc;
+      font-size: 36px;
+    }
+
+    label, input {
+      display: block;
+      margin: 10px auto;
+      font-size: 22px;
+    }
+
+    input[type="number"] {
+      padding: 5px 10px;
+      width: 100px;
+      font-size: 22px;
+      text-align: center;
+    }
+
+    button {
+      font-size: 22px;
+      margin: 10px;
+      padding: 10px 20px;
+    }
+
+    #dbDisplay, #exceedDisplay, #status {
+      margin-top: 15px;
+      font-weight: bold;
+    }
+
+    #visualAlert {
+      margin: 30px auto;
+      padding: 20px;
+      width: 80%;
+      font-size: 28px;
+      font-weight: bold;
+      border-radius: 12px;
+    }
+
+    .quiet {
+      background-color: #d4edda;
+      color: #155724;
+    }
+
+    .loud {
+      background-color: #f8d7da;
+      color: #721c24;
+    }
+
+    #historyList {
+      margin-top: 30px;
+      border-top: 2px dashed #ccc;
+      padding-top: 10px;
+      list-style: none;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+      text-align: left;
+    }
+
+    #historyList li {
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>分貝警報器</h1>
+
+  <label>警告分貝：
+    <input type="number" id="threshold" value="60">
+  </label>
+
+  <label>可超過次數：
+    <input type="number" id="maxExceed" value="3">
+  </label>
+
+  <button onclick="startMonitoring()">開始監測</button>
+  <button onclick="stopMonitoring()">停止監測</button>
+
+  <p id="dbDisplay">目前音量：0 dB</p>
+  <p id="exceedDisplay">已超過次數：0</p>
+  <p id="status">狀態：尚未開始</p>
+
+  <div id="visualAlert" class="quiet">目前安靜</div>
+
+  <ul id="historyList"></ul>
+
+  <script>
+    let audioContext, mic, analyser, dataArray;
+    let threshold = 60;
+    let maxExceed = 3;
+    let exceedCount = 0;
+    let monitoring = false;
+    let isSpeaking = false;
+    let rafId;
+
+    function speak(text, callback) {
+      isSpeaking = true;
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'zh-TW';
+      utterance.onend = () => {
+        isSpeaking = false;
+        if (callback) callback();
+      };
+      speechSynthesis.speak(utterance);
+    }
+
+    function startMonitoring() {
+      threshold = parseInt(document.getElementById('threshold').value);
+      maxExceed = parseInt(document.getElementById('maxExceed').value);
+      exceedCount = 0;
+      document.getElementById('exceedDisplay').textContent = `已超過次數：0`;
+      document.getElementById('status').textContent = '狀態：監測中...';
+      document.getElementById('historyList').innerHTML = '';
+      updateVisualAlert("quiet");
+
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          mic = audioContext.createMediaStreamSource(stream);
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 512;
+          dataArray = new Uint8Array(analyser.frequencyBinCount);
+          mic.connect(analyser);
+          monitoring = true;
+          loop();
+        })
+        .catch(err => {
+          alert('無法取得麥克風：' + err.message);
+        });
+    }
+
+    function loop() {
+      if (!monitoring || isSpeaking) {
+        rafId = requestAnimationFrame(loop);
+        return;
+      }
+
+      analyser.getByteTimeDomainData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        let val = (dataArray[i] - 128) / 128;
+        sum += val * val;
+      }
+      let rms = Math.sqrt(sum / dataArray.length);
+      let db = 20 * Math.log10(rms);
+      db = Math.max(0, Math.round(db + 90));
+
+      document.getElementById('dbDisplay').textContent = `目前音量：${db} dB`;
+
+      if (db > threshold) {
+        isSpeaking = true;
+
+        exceedCount++;
+        document.getElementById('exceedDisplay').textContent = `已超過次數：${exceedCount}`;
+        updateVisualAlert("loud");
+        addHistoryRecord(db);
+
+        if (exceedCount >= maxExceed) {
+          speak("請停下手邊動作，回到座位", () => {
+            stopMonitoring();
+          });
+        } else {
+          speak("太吵了，請降低音量", () => {
+            isSpeaking = false;
+            updateVisualAlert("quiet");
+          });
+        }
+      } else {
+        updateVisualAlert("quiet");
+      }
+
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function stopMonitoring() {
+      monitoring = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close();
+      }
+      document.getElementById('status').textContent = '狀態：已停止';
+      updateVisualAlert("quiet");
+    }
+
+    function updateVisualAlert(state) {
+      const alertDiv = document.getElementById("visualAlert");
+      if (state === "loud") {
+        alertDiv.className = "loud";
+        alertDiv.textContent = "太吵了！";
+      } else {
+        alertDiv.className = "quiet";
+        alertDiv.textContent = "目前安靜";
+      }
+    }
+
+    function addHistoryRecord(db) {
+      const now = new Date();
+      const time = now.toLocaleTimeString();
+      const li = document.createElement("li");
+      li.textContent = `【${time}】超標音量：${db} dB`;
+      document.getElementById("historyList").appendChild(li);
+    }
+  </script>
+</body>
+</html>
